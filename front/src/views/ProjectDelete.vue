@@ -1,12 +1,12 @@
 <template>
-    <div v-if="project">
+    <div style="max-width: 800px">
         <div class="d-block d-md-flex align-center">
             <div class="flex-grow-1">
                 <div><b>Delete this project</b></div>
                 <div>Once you delete a project, there is no going back. Please be certain.</div>
             </div>
             <div>
-                <v-btn block @click="dialog = true" color="red" outlined>Delete this project</v-btn>
+                <v-btn block @click="dialog = true" :disabled="readonly" color="red" outlined>Delete this project</v-btn>
             </div>
         </div>
         <v-dialog v-model="dialog" max-width="600">
@@ -19,19 +19,19 @@
                     <v-spacer />
                     <v-btn icon @click="dialog = false"><v-icon>mdi-close</v-icon></v-btn>
                 </div>
-                <p>This action cannot be undone. This will permanently delete the <b>{{project.name}}</b> project.</p>
-                <p>Please type <b>{{project.name}}</b> to confirm</p>
+                <p>
+                    This action cannot be undone. This will permanently delete the <b>{{ name }}</b> project.
+                </p>
+                <p>
+                    Please type <b>{{ name }}</b> to confirm
+                </p>
                 <v-text-field v-model="confirmation" outlined dense></v-text-field>
                 <v-alert v-if="error" color="red" icon="mdi-alert-octagon-outline" outlined text>
-                    {{error}}
+                    {{ error }}
                 </v-alert>
-                <v-btn block color="red" outlined :disabled="confirmation !== project.name" @click="del">
-                    <template v-if="$vuetify.breakpoint.mdAndUp">
-                        I understand the consequences, delete this project
-                    </template>
-                    <template v-else>
-                        Delete this project
-                    </template>
+                <v-btn block color="red" outlined :disabled="confirmation !== name" @click="del">
+                    <template v-if="$vuetify.breakpoint.mdAndUp"> I understand the consequences, delete this project </template>
+                    <template v-else> Delete this project </template>
                 </v-btn>
             </v-card>
         </v-dialog>
@@ -46,7 +46,8 @@ export default {
 
     data() {
         return {
-            project: null,
+            readonly: false,
+            name: '',
             dialog: false,
             loading: false,
             confirmation: '',
@@ -59,11 +60,10 @@ export default {
     },
 
     watch: {
-        dialog() {
-            this.project = null;
+        dialog(v) {
             this.confirmation = '';
-            this.dialog && this.get();
-        }
+            v && this.get();
+        },
     },
 
     methods: {
@@ -76,8 +76,9 @@ export default {
                     this.error = error;
                     return;
                 }
-                this.project = data;
-            })
+                this.readonly = data.readonly;
+                this.name = data.name;
+            });
         },
         del() {
             this.error = '';
@@ -86,14 +87,12 @@ export default {
                     this.error = error;
                     return;
                 }
-                this.$events.emit('project-deleted');
-                this.$router.push({name: 'index'});
-            })
+                this.$events.emit('projects');
+                this.$router.push({ name: 'index' });
+            });
         },
     },
-}
+};
 </script>
 
-<style scoped>
-
-</style>
+<style scoped></style>

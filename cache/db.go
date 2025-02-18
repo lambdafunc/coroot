@@ -3,12 +3,12 @@ package cache
 import (
 	"database/sql"
 	"errors"
-	"fmt"
+	"os"
+	"path"
+
 	"github.com/coroot/coroot/db"
 	"github.com/coroot/coroot/timeseries"
 	_ "github.com/mattn/go-sqlite3"
-	"os"
-	"path"
 )
 
 type PrometheusQueryState struct {
@@ -36,21 +36,20 @@ type Status struct {
 	LagAvg timeseries.Duration
 }
 
-func openStateDB(path string) (*sql.DB, error) {
-	database, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?mode=rwc&_sync=full", path))
-	if err != nil {
-		return nil, err
-	}
-	database.SetMaxOpenConns(1)
-	if err := db.NewMigrator(db.TypeSqlite, database).Migrate(&PrometheusQueryState{}); err != nil {
-		return nil, err
-	}
-	return database, nil
-}
-
 func (c *Cache) saveState(state *PrometheusQueryState) error {
-	_, err := c.state.Exec(
-		"INSERT OR REPLACE INTO prometheus_query_state (project_id, query, last_ts, last_error) values ($1, $2, $3, $4)",
+	c.stateLock.Lock()
+	defer c.stateLock.Unlock()
+	res, err := c.state.Exec(
+		"UPDATE prometheus_query_state SET last_ts = $1, last_error = $2 WHERE project_id = $3 AND query = $4",
+		state.LastTs, state.LastError, state.ProjectId, state.Query)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		return nil
+	}
+	_, err = c.state.Exec(
+		"INSERT INTO prometheus_query_state (project_id, query, last_ts, last_error) values ($1, $2, $3, $4)",
 		state.ProjectId, state.Query, state.LastTs, state.LastError)
 	return err
 }
@@ -73,11 +72,15 @@ func (c *Cache) loadStates(projectId db.ProjectId) (map[string]*PrometheusQueryS
 }
 
 func (c *Cache) deleteState(state *PrometheusQueryState) error {
+	c.stateLock.Lock()
+	defer c.stateLock.Unlock()
 	_, err := c.state.Exec("DELETE FROM prometheus_query_state WHERE project_id = $1 AND query = $2", state.ProjectId, state.Query)
 	return err
 }
 
 func (c *Cache) deleteProject(projectId db.ProjectId) error {
+	c.stateLock.Lock()
+	defer c.stateLock.Unlock()
 	projectDir := path.Join(c.cfg.Path, string(projectId))
 	if err := os.RemoveAll(projectDir); err != nil {
 		return err
@@ -108,7 +111,12 @@ func (c *Cache) getStatus(projectId db.ProjectId) (*Status, error) {
 	if err := c.state.QueryRow("SELECT max($1 - last_ts), avg($1 - last_ts) FROM prometheus_query_state WHERE project_id = $2", now, projectId).Scan(&max, &avg); err != nil {
 		return nil, err
 	}
-	s.LagMax = timeseries.Duration(max.Float64)
-	s.LagAvg = timeseries.Duration(avg.Float64)
+	if max.Valid && avg.Valid {
+		s.LagMax = timeseries.Duration(max.Float64)
+		s.LagAvg = timeseries.Duration(avg.Float64)
+	} else {
+		s.LagMax = BackFillInterval
+		s.LagAvg = BackFillInterval
+	}
 	return &s, nil
 }

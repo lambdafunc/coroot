@@ -1,36 +1,41 @@
 <template>
-<div>
-    <h1 class="text-h5 my-5">
-        Nodes / {{name}}
-        <v-progress-linear v-if="loading" indeterminate color="green" />
-    </h1>
+    <div>
+        <v-alert v-if="error" color="red" icon="mdi-alert-octagon-outline" outlined text>
+            {{ error }}
+        </v-alert>
 
-    <v-alert v-if="error" color="red" icon="mdi-alert-octagon-outline" outlined text>
-        {{error}}
-    </v-alert>
+        <h1 v-else class="text-h5 ml-4">
+            {{ name }}
+            <v-progress-linear v-if="loading" indeterminate color="green" />
+        </h1>
 
-    <Dashboard v-if="node" :name="name" :widgets="node.widgets" class="mt-3" />
-    <NoData v-else-if="!loading" />
-</div>
+        <template v-if="node">
+            <div v-if="node.status === 'unknown'" class="text-center">
+                This node is present in the Kubernetes cluster, but it seems that coroot-node-agent is not installed.
+            </div>
+            <Dashboard v-else :name="name" :widgets="node.widgets" class="mt-3" />
+        </template>
+        <NoData v-else-if="!loading && !error" />
+    </div>
 </template>
 
 <script>
-import Dashboard from "@/components/Dashboard";
-import NoData from "@/components/NoData";
+import Dashboard from '../components/Dashboard';
+import NoData from '../components/NoData';
 
 export default {
     props: {
         name: String,
     },
 
-    components: {Dashboard, NoData},
+    components: { Dashboard, NoData },
 
     data() {
         return {
             node: null,
             loading: false,
             error: '',
-        }
+        };
     },
 
     mounted() {
@@ -58,9 +63,7 @@ export default {
             });
         },
     },
-}
+};
 </script>
 
-<style scoped>
-
-</style>
+<style scoped></style>

@@ -3,65 +3,85 @@ package cache
 import (
 	"context"
 	"fmt"
+	"sort"
+
 	"github.com/coroot/coroot/cache/chunk"
+	"github.com/coroot/coroot/constructor"
 	"github.com/coroot/coroot/db"
 	"github.com/coroot/coroot/model"
-	"github.com/coroot/coroot/prom"
 	"github.com/coroot/coroot/timeseries"
+	"golang.org/x/exp/maps"
 )
 
-type Client struct {
-	cache           *Cache
-	projectId       db.ProjectId
-	refreshInterval timeseries.Duration
-	promClient      prom.Client
-}
-
-func (c *Cache) GetCacheClient(p *db.Project) *Client {
+func (c *Cache) GetCacheClient(projectId db.ProjectId) *Client {
 	return &Client{
-		cache:           c,
-		projectId:       p.Id,
-		refreshInterval: p.Prometheus.RefreshInterval,
+		cache:     c,
+		projectId: projectId,
 	}
 }
 
-func (c *Client) QueryRange(ctx context.Context, query string, from, to timeseries.Time, step timeseries.Duration) ([]model.MetricValues, error) {
-	from = from.Truncate(step)
-	to = to.Truncate(step)
+type Client struct {
+	cache     *Cache
+	projectId db.ProjectId
+}
+
+func (c *Client) QueryRange(ctx context.Context, query string, from, to timeseries.Time, step timeseries.Duration, fillFunc timeseries.FillFunc) ([]*model.MetricValues, error) {
 	c.cache.lock.RLock()
 	defer c.cache.lock.RUnlock()
-
-	byProject, ok := c.cache.byProject[c.projectId]
-	if !ok {
-		return nil, nil
+	projData := c.cache.byProject[c.projectId]
+	if projData == nil {
+		return nil, fmt.Errorf("unknown project: %s", c.projectId)
 	}
-	queryHash := hash(query)
-	qData, ok := byProject[queryHash]
-	if !ok {
-		return nil, nil
+	hash := queryHash(query)
+	qData := projData.queries[hash]
+	if qData == nil {
+		return nil, fmt.Errorf("%w: %s", constructor.ErrUnknownQuery, query)
 	}
-	start := from
-	end := to
-	res := map[uint64]model.MetricValues{}
+	from = from.Truncate(step)
+	to = to.Truncate(step)
+	res := map[uint64]*model.MetricValues{}
 	resPoints := int(to.Sub(from)/step + 1)
-	for _, ch := range qData.chunksOnDisk {
-		if ch.From > end || ch.From.Add(timeseries.Duration(ch.PointsCount-1)*ch.Step) < start {
+
+	chunks := maps.Values(qData.chunksOnDisk)
+	sort.Slice(chunks, func(i, j int) bool {
+		return chunks[i].Created < chunks[j].Created
+	})
+
+	for _, ch := range chunks {
+		if ch.From > to || ch.To() < from {
 			continue
 		}
-		err := chunk.Read(ch.Path, from, resPoints, step, res)
+		err := chunk.Read(ch.Path, from, resPoints, step, res, fillFunc)
 		if err != nil {
 			return nil, err
 		}
 	}
-	r := make([]model.MetricValues, 0, len(res))
-	for _, mv := range res {
-		r = append(r, mv)
-	}
-	return r, nil
+	return maps.Values(res), nil
 }
 
-func (c *Client) Ping(ctx context.Context) error {
-	return fmt.Errorf("not implemented")
+func (c *Client) GetStep(from, to timeseries.Time) (timeseries.Duration, error) {
+	c.cache.lock.RLock()
+	defer c.cache.lock.RUnlock()
+	projData := c.cache.byProject[c.projectId]
+	if projData == nil {
+		return 0, fmt.Errorf("unknown project: %s", c.projectId)
+	}
+
+	var step timeseries.Duration
+	for _, qData := range projData.queries {
+		for _, ch := range qData.chunksOnDisk {
+			if ch.From > to || ch.To() < from {
+				continue
+			}
+			if ch.Step > step {
+				step = ch.Step
+			}
+		}
+	}
+	if step == 0 {
+		step = projData.step
+	}
+	return step, nil
 }
 
 func (c *Client) GetTo() (timeseries.Time, error) {
@@ -69,40 +89,22 @@ func (c *Client) GetTo() (timeseries.Time, error) {
 	if err != nil {
 		return 0, err
 	}
+
 	if to.IsZero() {
 		return 0, nil
 	}
-	return to.Add(-c.refreshInterval), nil
+
+	c.cache.lock.RLock()
+	defer c.cache.lock.RUnlock()
+	projData := c.cache.byProject[c.projectId]
+	if projData == nil {
+		return 0, fmt.Errorf("unknown project: %s", c.projectId)
+	}
+	step := projData.step
+
+	return to.Add(-step), nil
 }
 
 func (c *Client) GetStatus() (*Status, error) {
 	return c.cache.getStatus(c.projectId)
-}
-
-func (c *Cache) getPromClient(p *db.Project) prom.Client {
-	user, password := "", ""
-	if p.Prometheus.BasicAuth != nil {
-		user, password = p.Prometheus.BasicAuth.User, p.Prometheus.BasicAuth.Password
-	}
-	client, err := prom.NewApiClient(p.Prometheus.Url, user, password, p.Prometheus.TlsSkipVerify)
-	if err != nil {
-		return NewErrorClient(err)
-	}
-	return client
-}
-
-type ErrorClient struct {
-	err error
-}
-
-func NewErrorClient(err error) *ErrorClient {
-	return &ErrorClient{err: err}
-}
-
-func (e ErrorClient) QueryRange(ctx context.Context, query string, from, to timeseries.Time, step timeseries.Duration) ([]model.MetricValues, error) {
-	return nil, e.err
-}
-
-func (e ErrorClient) Ping(ctx context.Context) error {
-	return e.err
 }

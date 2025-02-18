@@ -1,11 +1,12 @@
 package cache
 
 import (
+	"os"
+	"time"
+
 	"github.com/coroot/coroot/db"
 	"github.com/coroot/coroot/timeseries"
 	"k8s.io/klog"
-	"os"
-	"time"
 )
 
 func (c *Cache) gc() {
@@ -13,15 +14,14 @@ func (c *Cache) gc() {
 		return
 	}
 	for range time.Tick(c.cfg.GC.Interval) {
-		klog.Infoln("starting cache GC")
 		now := time.Now()
 
-		if ids, err := c.db.GetProjectIds(); err != nil {
+		if projects, err := c.db.GetProjectNames(); err != nil {
 			klog.Errorln("failed to get projects:", err)
 		} else {
 			c.lock.Lock()
 			for projectId := range c.byProject {
-				if ids[projectId] {
+				if _, ok := projects[projectId]; ok {
 					continue
 				}
 				klog.Infoln("deleting obsolete project:", projectId)
@@ -37,12 +37,15 @@ func (c *Cache) gc() {
 		minTs := timeseries.Time(now.Add(-c.cfg.GC.TTL).Unix())
 		toDelete := map[db.ProjectId]map[string][]string{}
 		c.lock.RLock()
-		for projectId, byQuery := range c.byProject {
+		for projectId, projData := range c.byProject {
+			if projData == nil {
+				continue
+			}
 			toDeleteInProject := map[string][]string{}
-			for queryHash, qData := range byQuery {
+			for hash, qData := range projData.queries {
 				for path, chunk := range qData.chunksOnDisk {
-					if chunk.From.Add(timeseries.Duration(chunk.PointsCount)*chunk.Step) < minTs {
-						toDeleteInProject[queryHash] = append(toDeleteInProject[queryHash], path)
+					if chunk.To() < minTs {
+						toDeleteInProject[hash] = append(toDeleteInProject[hash], path)
 					}
 				}
 			}
@@ -54,8 +57,12 @@ func (c *Cache) gc() {
 
 		c.lock.Lock()
 		for projectId, toDeleteInProject := range toDelete {
-			for queryHash, chunks := range toDeleteInProject {
-				qData := c.byProject[projectId][queryHash]
+			projData := c.byProject[projectId]
+			if projData == nil {
+				continue
+			}
+			for hash, chunks := range toDeleteInProject {
+				qData := projData.queries[hash]
 				for _, path := range chunks {
 					klog.Infoln("deleting obsolete chunk:", path)
 					if err := os.Remove(path); err != nil {
@@ -65,12 +72,12 @@ func (c *Cache) gc() {
 					}
 				}
 				if len(qData.chunksOnDisk) == 0 {
-					delete(c.byProject[projectId], queryHash)
+					delete(projData.queries, hash)
 				}
 			}
 		}
 
 		c.lock.Unlock()
-		klog.Infof("GC done in %s", time.Since(now))
+		klog.Infof("GC done in %s", time.Since(now).Truncate(time.Millisecond))
 	}
 }

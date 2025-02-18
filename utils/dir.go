@@ -2,8 +2,12 @@ package utils
 
 import (
 	"fmt"
-	"k8s.io/klog"
 	"os"
+	"path"
+	"strings"
+
+	"github.com/google/uuid"
+	"k8s.io/klog"
 )
 
 func CreateDirectoryIfNotExists(path string) error {
@@ -22,4 +26,22 @@ func CreateDirectoryIfNotExists(path string) error {
 		return fmt.Errorf("failed to create dir %s: %w", path, err)
 	}
 	return nil
+}
+
+func GetInstanceUuid(dataDir string) string {
+	instanceUuid := ""
+	filePath := path.Join(dataDir, "instance.uuid")
+	data, err := os.ReadFile(filePath)
+	if err != nil && !os.IsNotExist(err) {
+		klog.Errorln("failed to read instance id:", err)
+	}
+	instanceUuid = strings.TrimSpace(string(data))
+	if _, err = uuid.Parse(instanceUuid); err != nil {
+		instanceUuid = uuid.NewString()
+		if err = os.WriteFile(filePath, []byte(instanceUuid), 0644); err != nil {
+			klog.Errorln("failed to write instance id:", err)
+			return ""
+		}
+	}
+	return instanceUuid
 }

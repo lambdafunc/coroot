@@ -2,16 +2,17 @@ package cache
 
 import (
 	"fmt"
-	"github.com/coroot/coroot/cache/chunk"
-	"github.com/coroot/coroot/db"
-	"github.com/coroot/coroot/model"
-	"github.com/coroot/coroot/timeseries"
-	"k8s.io/klog"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/coroot/coroot/cache/chunk"
+	"github.com/coroot/coroot/db"
+	"github.com/coroot/coroot/model"
+	"github.com/coroot/coroot/timeseries"
+	"k8s.io/klog"
 )
 
 type CompactionTask struct {
@@ -35,7 +36,6 @@ func (ct CompactionTask) String() string {
 
 func calcCompactionTasks(compactor Compactor, projectID db.ProjectId, queryHash string, chunks map[string]*chunk.Meta) []*CompactionTask {
 	tasks := map[timeseries.Time]*CompactionTask{}
-	jitter := chunkJitter(projectID, queryHash)
 	for _, ch := range chunks {
 		if timeseries.Duration(ch.PointsCount)*ch.Step != compactor.SrcChunkDuration {
 			continue
@@ -43,7 +43,7 @@ func calcCompactionTasks(compactor Compactor, projectID db.ProjectId, queryHash 
 		if !ch.Finalized {
 			continue
 		}
-		dstChunkTs := ch.From.Add(-jitter).Truncate(compactor.DstChunkDuration).Add(jitter)
+		dstChunkTs := ch.From.Truncate(compactor.DstChunkDuration).Add(ch.Jitter())
 		task := tasks[dstChunkTs]
 		if task == nil {
 			task = &CompactionTask{
@@ -93,10 +93,13 @@ func (c *Cache) compaction() {
 		var tasks []*CompactionTask
 		c.lock.RLock()
 
-		for projectID, queries := range c.byProject {
-			for queryHash, qData := range queries {
+		for projectID, projData := range c.byProject {
+			if projData == nil {
+				continue
+			}
+			for hash, qData := range projData.queries {
 				for _, cfg := range cfg.Compactors {
-					tasks = append(tasks, calcCompactionTasks(cfg, projectID, queryHash, qData.chunksOnDisk)...)
+					tasks = append(tasks, calcCompactionTasks(cfg, projectID, hash, qData.chunksOnDisk)...)
 				}
 			}
 		}
@@ -113,39 +116,47 @@ func (c *Cache) compact(t CompactionTask) error {
 		return fmt.Errorf("no src chunks")
 	}
 	start := time.Now()
-	metrics := map[uint64]model.MetricValues{}
+	metrics := map[uint64]*model.MetricValues{}
 	sort.Slice(t.src, func(i, j int) bool {
 		return t.src[i].From < t.src[j].From
 	})
-	step := t.src[0].Step
+	var step timeseries.Duration
+	for _, ch := range t.src {
+		if ch.Step > step {
+			step = ch.Step
+		}
+	}
 	pointsCount := int(t.compactor.DstChunkDuration / step)
 	for _, i := range t.src {
-		if err := chunk.Read(i.Path, t.dstChunk, pointsCount, step, metrics); err != nil {
+		if err := chunk.Read(i.Path, t.dstChunk, pointsCount, step, metrics, timeseries.FillAny); err != nil {
 			return fmt.Errorf("failed to read metrics from src chunk while compaction: %s", err)
 		}
 	}
 
-	dst := make([]model.MetricValues, 0, len(metrics))
+	dst := make([]*model.MetricValues, 0, len(metrics))
 	for _, m := range metrics {
 		dst = append(dst, m)
+	}
+	if err := c.writeChunk(t.projectID, t.queryHash, t.dstChunk, pointsCount, step, true, dst); err != nil {
+		return err
 	}
 
 	c.lock.Lock()
 	defer c.lock.Unlock()
-
-	if err := c.writeChunk(t.projectID, t.queryHash, t.dstChunk, pointsCount, step, true, dst); err != nil {
-		return err
-	}
-	qData := c.byProject[t.projectID][t.queryHash]
-	if qData == nil {
-		klog.Errorf("query data not found: %s-%s", t.projectID, t.queryHash)
+	projData := c.byProject[t.projectID]
+	if projData == nil {
+		klog.Errorf("project data not found: %s", t.projectID)
 	} else {
-		for _, src := range t.src {
-			klog.Infoln("deleting chunk after compaction:", src.Path)
-			if err := os.Remove(src.Path); err != nil {
-				klog.Errorf("failed to delete chunk %s: %s", src.Path, err)
+		qData := projData.queries[t.queryHash]
+		if qData == nil {
+			klog.Errorf("query data not found: %s-%s", t.projectID, t.queryHash)
+		} else {
+			for _, src := range t.src {
+				if err := os.Remove(src.Path); err != nil {
+					klog.Errorf("failed to delete chunk %s: %s", src.Path, err)
+				}
+				delete(qData.chunksOnDisk, src.Path)
 			}
-			delete(qData.chunksOnDisk, src.Path)
 		}
 	}
 	c.compactedChunks.WithLabelValues(

@@ -5,16 +5,25 @@ import (
 )
 
 type Redis struct {
-	Up        timeseries.TimeSeries
+	InternalExporter bool
+
+	Up    *timeseries.TimeSeries
+	Error LabelLastValue
+
 	Version   LabelLastValue
 	Role      LabelLastValue
-	Calls     map[string]timeseries.TimeSeries
-	CallsTime map[string]timeseries.TimeSeries
+	Calls     map[string]*timeseries.TimeSeries
+	CallsTime map[string]*timeseries.TimeSeries
 }
 
-func NewRedis() *Redis {
+func NewRedis(internalExporter bool) *Redis {
 	return &Redis{
-		Calls:     map[string]timeseries.TimeSeries{},
-		CallsTime: map[string]timeseries.TimeSeries{},
+		InternalExporter: internalExporter,
+		Calls:            map[string]*timeseries.TimeSeries{},
+		CallsTime:        map[string]*timeseries.TimeSeries{},
 	}
+}
+
+func (r *Redis) IsUp() bool {
+	return r.Up.Last() > 0
 }
