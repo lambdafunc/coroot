@@ -2,22 +2,31 @@ package timeseries
 
 import (
 	"encoding/json"
+	"fmt"
+	"strconv"
 	"time"
 )
 
 const (
-	Hour   = Duration(3600)
-	Minute = Duration(60)
 	Second = Duration(1)
+	Minute = Second * 60
+	Hour   = Minute * 60
+	Day    = Hour * 24
+	Month  = Day * 30
 )
 
 type Context struct {
-	From Time     `json:"from"`
-	To   Time     `json:"to"`
-	Step Duration `json:"step"`
+	From    Time     `json:"from"`
+	To      Time     `json:"to"`
+	Step    Duration `json:"step"`
+	RawStep Duration `json:"raw_step"`
 }
 
 type Duration int64
+
+func DurationFromStandard(d time.Duration) Duration {
+	return Duration(d / time.Second)
+}
 
 func (d Duration) Truncate(m Duration) Duration {
 	if m <= 0 {
@@ -36,14 +45,25 @@ func (d Duration) MarshalJSON() ([]byte, error) {
 
 func (d *Duration) UnmarshalJSON(b []byte) error {
 	var i int64
-	if err := json.Unmarshal(b, &i); err != nil {
-		return err
+	if err := json.Unmarshal(b, &i); err == nil {
+		*d = Duration(i / 1000)
+		return nil
 	}
-	*d = Duration(i / 1000)
-	return nil
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		if td, err := time.ParseDuration(s); err == nil {
+			*d = Duration(td.Seconds())
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid duration: %s", string(b))
 }
 
 type Time int64
+
+func TimeFromStandard(t time.Time) Time {
+	return Time(t.Unix())
+}
 
 func Now() Time {
 	return Time(time.Now().Unix())
@@ -73,8 +93,16 @@ func (t Time) Before(other Time) bool {
 	return t < other
 }
 
+func (t Time) After(other Time) bool {
+	return t > other
+}
+
 func (t Time) ToStandard() time.Time {
 	return time.Unix(int64(t), 0).UTC()
+}
+
+func (t Time) String() string {
+	return strconv.FormatInt(int64(t), 10)
 }
 
 func (t Time) MarshalJSON() ([]byte, error) {

@@ -1,30 +1,19 @@
-FROM golang:1.18-stretch AS backend-builder
-WORKDIR /go/src
+FROM golang:1.23-bullseye AS backend-builder
+RUN apt update && apt install -y liblz4-dev
+WORKDIR /tmp/src
 COPY go.mod .
 COPY go.sum .
 RUN go mod download
 COPY . .
 ARG VERSION=unknown
-RUN go install -mod=readonly -ldflags "-X main.version=$VERSION" .
-RUN go test ./...
+RUN go build -mod=readonly -ldflags "-X main.version=$VERSION" -o coroot .
 
 
-FROM node:18-buster AS frontend-builder
-WORKDIR /tmp/front
-COPY ./front/package*.json ./
-RUN npm install
-COPY ./front .
-RUN ./node_modules/.bin/vue-cli-service build --dest=dist src/main.js
-
-
-FROM debian:stretch
-
+FROM debian:bullseye
 RUN apt update && apt install -y ca-certificates && apt clean
 
 WORKDIR /opt/coroot
-
-COPY --from=backend-builder /go/bin/coroot /opt/coroot/coroot
-COPY --from=frontend-builder /tmp/front/dist /opt/coroot/static
+COPY --from=backend-builder /tmp/src/coroot /opt/coroot/coroot
 
 VOLUME /data
 EXPOSE 8080

@@ -1,16 +1,17 @@
 package application
 
 import (
-	"github.com/coroot/coroot/api/views/widgets"
+	"sort"
+
 	"github.com/coroot/coroot/model"
 	"github.com/coroot/coroot/timeseries"
-	"sort"
-	"strings"
+	"github.com/coroot/coroot/utils"
+	"golang.org/x/exp/maps"
 )
 
 type View struct {
-	AppMap     *AppMap              `json:"app_map"`
-	Dashboards []*widgets.Dashboard `json:"dashboards"`
+	AppMap  *AppMap              `json:"app_map"`
+	Reports []*model.AuditReport `json:"reports"`
 }
 
 type AppMap struct {
@@ -19,11 +20,18 @@ type AppMap struct {
 
 	Clients      []*Application `json:"clients"`
 	Dependencies []*Application `json:"dependencies"`
+
+	CustomApplications []string                    `json:"custom_applications"`
+	Categories         []model.ApplicationCategory `json:"categories"`
 }
 
 type Application struct {
-	Id     model.ApplicationId `json:"id"`
-	Labels model.Labels        `json:"labels"`
+	Id         model.ApplicationId       `json:"id"`
+	Category   model.ApplicationCategory `json:"category"`
+	Custom     bool                      `json:"custom"`
+	Status     model.Status              `json:"status"`
+	Indicators []model.Indicator         `json:"indicators"`
+	Labels     model.Labels              `json:"labels"`
 }
 
 type Instance struct {
@@ -36,9 +44,14 @@ type Instance struct {
 }
 
 type ApplicationLink struct {
-	Id        model.ApplicationId `json:"id"`
-	Status    model.Status        `json:"status"`
-	Direction string              `json:"direction"`
+	Id           model.ApplicationId `json:"id"`
+	Status       model.Status        `json:"status"`
+	StatusReason string              `json:"status_reason"`
+	Direction    string              `json:"direction"`
+	Stats        []string            `json:"stats"`
+	Weight       float32             `json:"weight"`
+
+	connections []*model.Connection
 }
 
 type InstanceLink struct {
@@ -50,13 +63,20 @@ type InstanceLink struct {
 func Render(world *model.World, app *model.Application) *View {
 	appMap := &AppMap{
 		Application: &Application{
-			Id:     app.Id,
-			Labels: app.Labels(),
+			Id:         app.Id,
+			Category:   app.Category,
+			Custom:     app.Custom,
+			Status:     app.Status,
+			Indicators: model.CalcIndicators(app),
+			Labels:     app.Labels(),
 		},
+		CustomApplications: maps.Keys(world.CustomApplications),
+		Categories:         world.Categories,
 	}
+
 	deps := map[model.ApplicationId]bool{}
 	for _, instance := range app.Instances {
-		if instance.Pod != nil && instance.Pod.IsObsolete() {
+		if instance.IsObsolete() || instance.IsFailed() {
 			continue
 		}
 		i := &Instance{Id: instance.Name, Labels: model.Labels{}}
@@ -65,25 +85,40 @@ func Render(world *model.World, app *model.Application) *View {
 		}
 		if role := instance.ClusterRoleLast(); role != model.ClusterRoleNone {
 			i.Labels["role"] = role.String()
+		} else if instance.ApplicationTypes()[model.ApplicationTypePgbouncer] {
+			i.Labels["proxy"] = "pgbouncer"
 		}
-		if instance.ApplicationTypes()[model.ApplicationTypePgbouncer] {
-			i.Labels["pooler"] = "pgbouncer"
+		if instance.Mongodb != nil {
+			if v := instance.Mongodb.ReplicaSet.Value(); v != "" {
+				i.Labels["rs"] = v
+			}
 		}
-
+		if instance.ApplicationTypes()[model.ApplicationTypeMongos] {
+			i.Labels["proxy"] = "mongos"
+		}
 		for _, connection := range instance.Upstreams {
-			if connection.RemoteInstance == nil {
+			if connection.RemoteApplication == nil {
 				continue
 			}
-			if connection.RemoteInstance.OwnerId != app.Id {
-				deps[connection.RemoteInstance.OwnerId] = true
-				i.addDependency(connection.RemoteInstance.OwnerId, connection.Status(), "to")
-			} else if connection.RemoteInstance.Name != instance.Name {
-				i.addInternalLink(connection.RemoteInstance.Name, connection.Status())
+			if connection.RemoteApplication.Id != app.Id {
+				deps[connection.RemoteApplication.Id] = true
+				status, reason := connection.Status()
+				i.addDependency(connection.RemoteApplication.Id, status, reason, "to", connection)
+			} else if connection.RemoteInstance != nil && connection.RemoteInstance.Name != instance.Name {
+				status, _ := connection.Status()
+				i.addInternalLink(connection.RemoteInstance.Name, status)
 			}
 		}
-		for _, connection := range instance.Downstreams {
-			if connection.Instance.OwnerId != app.Id {
-				i.addClient(connection.Instance.OwnerId, connection.Status(), "to")
+		for _, connection := range app.Downstreams {
+			if connection.Instance.Owner != app {
+				switch {
+				case connection.RemoteInstance != nil && connection.RemoteInstance.Name == instance.Name:
+				case connection.RemoteInstance == nil:
+				default:
+					continue
+				}
+				status, reason := connection.Status()
+				i.addClient(connection.Instance.Owner.Id, status, reason, "to", connection)
 			}
 		}
 		appMap.Instances = append(appMap.Instances, i)
@@ -92,7 +127,7 @@ func Render(world *model.World, app *model.Application) *View {
 		clients := make([]*ApplicationLink, 0, len(i.Clients))
 		for _, c := range i.Clients {
 			if deps[c.Id] {
-				i.addDependency(c.Id, c.Status, "from")
+				i.addDependency(c.Id, c.Status, c.StatusReason, "from", c.connections...)
 			} else {
 				clients = append(clients, c)
 			}
@@ -103,11 +138,11 @@ func Render(world *model.World, app *model.Application) *View {
 	for _, i := range appMap.Instances {
 		for _, a := range i.Dependencies {
 			appMap.addDependency(world, a.Id)
+			a.calcStats()
 		}
-	}
-	for _, i := range appMap.Instances {
 		for _, a := range i.Clients {
 			appMap.addClient(world, a.Id)
+			a.calcStats()
 		}
 	}
 	sort.Slice(appMap.Instances, func(i1, i2 int) bool {
@@ -120,17 +155,20 @@ func Render(world *model.World, app *model.Application) *View {
 		return appMap.Dependencies[i].Id.Name < appMap.Dependencies[j].Id.Name
 	})
 
-	view := &View{AppMap: appMap}
-	events := calcAppEvents(app)
-	view.addDashboard(instances(world.Ctx, app), events)
-	view.addDashboard(cpu(world.Ctx, app), events)
-	view.addDashboard(memory(world.Ctx, app), events)
-	view.addDashboard(storage(world.Ctx, app), events)
-	view.addDashboard(network(world.Ctx, app, world), events)
-	view.addDashboard(postgres(world.Ctx, app), events)
-	view.addDashboard(redis(world.Ctx, app), events)
-	view.addDashboard(logs(world.Ctx, app), events)
-	return view
+	if len(app.Incidents) > 0 {
+		annotations := model.IncidentsToAnnotations(app.Incidents, world.Ctx)
+		for _, r := range app.Reports {
+			for _, w := range r.Widgets {
+				w.AddAnnotation(annotations...)
+			}
+		}
+	}
+
+	v := &View{
+		AppMap:  appMap,
+		Reports: app.Reports,
+	}
+	return v
 }
 
 func (m *AppMap) addDependency(w *model.World, id model.ApplicationId) {
@@ -143,7 +181,13 @@ func (m *AppMap) addDependency(w *model.World, id model.ApplicationId) {
 	if app == nil {
 		return
 	}
-	m.Dependencies = append(m.Dependencies, &Application{Id: id, Labels: app.Labels()})
+	m.Dependencies = append(m.Dependencies, &Application{
+		Id:         id,
+		Custom:     app.Custom,
+		Status:     app.Status,
+		Indicators: model.CalcIndicators(app),
+		Labels:     app.Labels(),
+	})
 }
 
 func (m *AppMap) addClient(w *model.World, id model.ApplicationId) {
@@ -156,103 +200,76 @@ func (m *AppMap) addClient(w *model.World, id model.ApplicationId) {
 	if app == nil {
 		return
 	}
-	m.Clients = append(m.Clients, &Application{Id: id, Labels: app.Labels()})
-}
-
-func (v *View) addDashboard(d *widgets.Dashboard, events []*Event) {
-	var ws []*widgets.Widget
-	for _, w := range d.Widgets {
-		if w.Chart != nil {
-			if len(w.Chart.Series) == 0 {
-				continue
-			}
-			addAnnotations(events, w.Chart)
-		}
-		if w.ChartGroup != nil {
-			var charts []*widgets.Chart
-			for _, ch := range w.ChartGroup.Charts {
-				if len(ch.Series) == 0 {
-					continue
-				}
-				charts = append(charts, ch)
-				addAnnotations(events, ch)
-			}
-			if len(charts) == 0 {
-				continue
-			}
-			w.ChartGroup.Charts = charts
-			w.ChartGroup.AutoFeatureChart()
-		}
-		if w.LogPatterns != nil {
-			if len(w.LogPatterns.Patterns) == 0 {
-				continue
-			}
-		}
-		ws = append(ws, w)
-	}
-	if len(ws) == 0 {
-		return
-	}
-	sort.SliceStable(ws, func(i, j int) bool {
-		return ws[i].Table != nil
+	m.Clients = append(m.Clients, &Application{
+		Id:         id,
+		Custom:     app.Custom,
+		Status:     app.Status,
+		Indicators: model.CalcIndicators(app),
+		Labels:     app.Labels(),
 	})
-	d.Widgets = ws
-	v.Dashboards = append(v.Dashboards, d)
 }
 
-func addAnnotations(events []*Event, chart *widgets.Chart) {
-	if len(events) == 0 {
-		return
-	}
-	var annotations []*annotation
-	getLast := func() *annotation {
-		if len(annotations) == 0 {
-			return nil
-		}
-		return annotations[len(annotations)-1]
-	}
-	for _, e := range events {
-		last := getLast()
-		if last == nil || e.Start.Sub(last.start) > 3*chart.Ctx.Step {
-			a := &annotation{start: e.Start, end: e.End, events: []*Event{e}}
-			annotations = append(annotations, a)
-			continue
-		}
-		last.events = append(last.events, e)
-		last.end = e.End
-	}
-	for _, a := range annotations {
-		sort.Slice(a.events, func(i, j int) bool {
-			return a.events[i].Type < a.events[j].Type
-		})
-		icon := ""
-		var msgs []string
-		for _, e := range a.events {
-			i := ""
-			switch e.Type {
-			case EventTypeRollout:
-				msgs = append(msgs, "application rollout")
-				i = "mdi-swap-horizontal-circle-outline"
-			case EventTypeSwitchover:
-				msgs = append(msgs, "switchover "+e.Details)
-				i = "mdi-database-sync-outline"
-			case EventTypeInstanceUp:
-				msgs = append(msgs, e.Details+" is up")
-				i = "mdi-alert-octagon-outline"
-			case EventTypeInstanceDown:
-				msgs = append(msgs, e.Details+" is down")
-				i = "mdi-alert-octagon-outline"
+func (i *Instance) addClient(id model.ApplicationId, status model.Status, statusReason string, direction string, connections ...*model.Connection) {
+	for _, a := range i.Clients {
+		if a.Id == id {
+			if a.Status < status {
+				a.Status = status
+				a.StatusReason = statusReason
 			}
-			if icon == "" {
-				icon = i
-			}
+			a.connections = append(a.connections, connections...)
+			return
 		}
-		chart.AddAnnotation(strings.Join(msgs, "<br>"), a.start, a.end, icon)
 	}
+	for _, a := range i.Dependencies {
+		if a.Id == id {
+			a.Direction = "both"
+			return
+		}
+	}
+	i.Clients = append(i.Clients, &ApplicationLink{Id: id, Status: status, StatusReason: statusReason, Direction: direction, connections: connections})
 }
 
-type annotation struct {
-	start  timeseries.Time
-	end    timeseries.Time
-	events []*Event
+func (i *Instance) addDependency(id model.ApplicationId, status model.Status, statusReason string, direction string, connections ...*model.Connection) {
+	for _, a := range i.Dependencies {
+		if a.Id == id {
+			if a.Status < status {
+				a.Status = status
+				a.StatusReason = statusReason
+			}
+			a.connections = append(a.connections, connections...)
+			return
+		}
+	}
+	i.Dependencies = append(i.Dependencies, &ApplicationLink{Id: id, Status: status, StatusReason: statusReason, Direction: direction, connections: connections})
+}
+
+func (i *Instance) addInternalLink(id string, status model.Status) {
+	for _, l := range i.InternalLinks {
+		if l.Id == id {
+			if l.Status < status {
+				l.Status = status
+			}
+			return
+		}
+	}
+	i.InternalLinks = append(i.InternalLinks, &InstanceLink{Id: id, Status: status, Direction: "to"})
+}
+
+func (l *ApplicationLink) calcStats() {
+	requests := model.GetConnectionsRequestsSum(l.connections, nil).Last()
+	latency := model.GetConnectionsRequestsLatency(l.connections, nil).Last()
+	if !timeseries.IsNaN(requests) {
+		l.Weight = requests
+	}
+
+	var bytesSent, bytesReceived float32
+	for _, c := range l.connections {
+		if v := c.BytesSent.Last(); !timeseries.IsNaN(v) {
+			bytesSent += v
+		}
+		if v := c.BytesReceived.Last(); !timeseries.IsNaN(v) {
+			bytesReceived += v
+		}
+	}
+	l.Stats = utils.FormatLinkStats(requests, latency, bytesSent, bytesReceived, l.StatusReason)
 }

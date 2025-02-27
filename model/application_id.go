@@ -1,6 +1,7 @@
 package model
 
 import (
+	"database/sql/driver"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -8,7 +9,8 @@ import (
 )
 
 var (
-	hexPattern = regexp.MustCompile(`[\da-f]+`)
+	ApplicationIdZero = ApplicationId{}
+	hexPattern        = regexp.MustCompile(`[\da-f]+`)
 )
 
 type ApplicationId struct {
@@ -43,9 +45,13 @@ func NewApplicationId(ns string, kind ApplicationKind, name string) ApplicationI
 func NewApplicationIdFromString(src string) (ApplicationId, error) {
 	parts := strings.SplitN(src, ":", 3)
 	if len(parts) < 3 {
-		return ApplicationId{}, fmt.Errorf("should be ns:kind:name")
+		return ApplicationId{}, fmt.Errorf("invalid application id: %s", src)
 	}
-	return NewApplicationId(parts[0], ApplicationKind(parts[1]), parts[2]), nil
+	return ApplicationId{Namespace: parts[0], Kind: ApplicationKind(parts[1]), Name: parts[2]}, nil
+}
+
+func (a ApplicationId) IsZero() bool {
+	return a == ApplicationIdZero
 }
 
 func (a ApplicationId) String() string {
@@ -54,4 +60,24 @@ func (a ApplicationId) String() string {
 
 func (a ApplicationId) MarshalText() ([]byte, error) {
 	return []byte(a.String()), nil
+}
+
+func (a *ApplicationId) UnmarshalText(text []byte) error {
+	var err error
+	*a, err = NewApplicationIdFromString(string(text))
+	return err
+}
+
+func (a ApplicationId) Value() (driver.Value, error) {
+	return a.String(), nil
+}
+
+func (a *ApplicationId) Scan(src any) error {
+	if src == nil {
+		*a = ApplicationId{}
+		return nil
+	}
+	var err error
+	*a, err = NewApplicationIdFromString(src.(string))
+	return err
 }

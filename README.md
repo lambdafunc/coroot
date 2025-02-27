@@ -1,67 +1,127 @@
 <img width="200" src="https://coroot.com/static/logo_u.png">
 
-Coroot is a monitoring and troubleshooting tool for microservice architectures. 
-
-![](https://github.com/coroot/coroot/actions/workflows/build.yml/badge.svg)
+![](https://github.com/coroot/coroot/actions/workflows/ci.yml/badge.svg)
 [![Go Report Card](https://goreportcard.com/badge/github.com/coroot/coroot)](https://goreportcard.com/report/github.com/coroot/coroot)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![](https://img.shields.io/badge/slack-coroot-brightgreen.svg?logo=slack)](https://join.slack.com/t/coroot-community/shared_invite/zt-1gsnfo0wj-I~Zvtx5CAAb8vr~r~vecyw)
 
-<p align="center"><img width="800" src="https://user-images.githubusercontent.com/194465/187667684-224cfa32-96cd-44f0-87f7-0528b3dd7bb9.gif"></p>
+### [Features](#features) | [Installation](https://docs.coroot.com/) | [Documentation](https://docs.coroot.com/) | [Community & Support](#community--support) | [Live demo](https://demo.coroot.com/) | [Coroot Enterprise](https://coroot.com/enterprise/) 
 
+
+## Open-source observability augmented with actionable insights
+
+Collecting metrics, logs, and traces alone doesn't make your applications observable.
+Coroot turns that data into actionable insights for you!
 
 ## Features
 
-### eBPF-based service mapping
-Thanks to eBPF, Coroot shows you a comprehensive [map of your services](https://coroot.com/blog/building-a-service-map-using-ebpf) without any code changes.
+### Zero-instrumentation observability
 
-<p align="center"><img width="800" src="./front/public/readme/service-map.png"></p>
+* Metrics, logs, traces, and profiles are gathered automatically by using eBPF
+* Coroot provides you with a Service Map that covers 100% of your system with no blind spots
+* Predefined inspections audit each application without any configuration
 
-### Log analysis without storage costs
-
-[Node-agent](https://github.com/coroot/coroot-node-agent) turns terabytes of logs into just a few dozen metrics by extracting 
-[repeated patterns](https://coroot.com/blog/mining-logs-from-unstructured-logs) right on the node. 
-Using these metrics allows you to quickly and cost-effectively find the errors relevant to a particular outage.
-
-<p align="center"><img width="800" src="./front/public/readme/logs.png"></p>
-
-### Cloud topology awareness
-
-Coroot uses [cloud metadata](https://coroot.com/blog/cloud-metadata) to show which regions and availability zones 
-each application runs in.
-This is very important to known, because:
- * Network latency between availability zones within the same region can be higher than within one particular zone.
- * Data transfer between availability zones in the same region is paid, while data transfer within a zone is free.
-
-<p align="center"><img width="800" src="./front/public/readme/topology.png"></p>
-
-### Advanced Postgres observability
- 
-Coroot [makes](https://coroot.com/blog/pg-agent) troubleshooting Postgres-related issues easier not only for experienced DBAs but also for engineers not specialized in databases.
-
-<p align="center"><img width="800" src="./front/public/readme/postgres.png"></p> 
+<p align="center">
+<img width="775" src="https://user-images.githubusercontent.com/194465/235189673-833066d1-b18f-4c7a-8b81-81b37f966daf.png">
+</p>
 
 
-### Integration into your existing monitoring stack
+### Application Health Summary
 
-Coroot uses Prometheus as a Time-Series Database (TSDB):
-* The agents are Prometheus-compatible exporters 
-* Coroot itself is a Prometheus client (like Grafana)
+* Easily understand the status of your services, even when dealing with hundreds of them
+* Gain insight into application logs without the need to manually inspect each one
+* SLOs (Service Level Objectives) tracking
 
-<p align="center"><img width="600" src="./front/public/readme/prometheus.svg"></p>
+<p align="center">
+<img width="773" src="https://github.com/coroot/coroot/assets/194465/6cef06d4-0dcc-4908-85a3-7ec140bd444f">
+</p>
 
-### Built-in Prometheus cache
+### Explore any outlier requests with distributed tracing
 
-The built-in Prometheus cache allows Coroot to provide you with a blazing fast UI without overloading your Prometheus.
+* Investigate any anomaly with just one click
+* Vendor-neutral instrumentation with OpenTelemetry
+* Are you unable to instrument legacy or third-party services?
+Coroot's eBPF-based instrumentation can capture requests without requiring any code changes.
+
+<p align="center">
+<img width="1352" src="https://github.com/coroot/coroot/assets/194465/f5a4342f-776d-48b1-a3b8-03ccbdf43b5e">
+</p>
+
+### Grasp insights from logs with just a quick glance
+
+* Log patterns: out-of-the-box event clustering
+* Seamless logs-to-traces correlation
+* Lightning-fast search based on ClickHouse
+
+<p align="center">
+<img width="777" src="https://github.com/coroot/coroot/assets/194465/14abefdb-4737-4991-9d48-c7efec42fefd">
+</p>
+
+### Profile any application in 1 click
+
+* Analyze any unexpected spike in CPU or memory usage down to the precise line of code
+* Don't make assumptions, know exactly what the resources were spent on
+* Easily investigate any anomaly by comparing it to the system's baseline behavior
+
+<p align="center">
+<img width="773" src="https://user-images.githubusercontent.com/194465/235190071-21256cbe-6201-4d16-97f3-6565f7256f98.png">
+</p>
+
+### Built-in expertise
+
+* Coroot can automatically identify over 80% of issues
+* If an app is not meeting its Service Level Objectives (SLOs), Coroot will send a single alert that includes the results of all relevant inspections
+* You can easily adjust any inspection for a particular application or an entire project
+
+<p align="center">
+  <img width="778" src="https://github.com/coroot/coroot/assets/194465/3590a492-8895-4cc6-94df-a880656a330a">
+</p>
+
+### Deployment Tracking
+
+* Coroot discovers and monitors every application rollout in your Kubernetes cluster
+* Requires no integration with your CI/CD pipeline
+* Each release is automatically compared with the previous one, so you'll never miss even the slightest performance degradation
+* With integrated Cost Monitoring, developers can track how each change affects their cloud bill
+
+<p align="center">
+<img width="772" src="https://user-images.githubusercontent.com/194465/235190275-a6541063-1b26-4ae3-8c20-87787d2e928d.png">
+</p>
+
+### Cost Monitoring
+
+* Understand your cloud costs down to the specific application
+* Doesn't require access to you cloud account or any other configurations
+* AWS, GCP, Azure
+
+<p align="center">
+<img width="771" src="https://user-images.githubusercontent.com/194465/235190425-a7f33c7f-33ef-4ef5-9dc1-525ff7524e93.png">
+</p>
 
 
 ## Installation
 
 You can run Coroot as a Docker container or deploy it into any Kubernetes cluster.
-Check out the [Installation guide](https://coroot.com/docs/coroot-community-edition/getting-started/installation).
+Check out the [Installation guide](https://docs.coroot.com/).
 
 ## Documentation
 
-The Coroot documentation is available at [coroot.com/docs/coroot-community-edition](https://coroot.com/docs/coroot-community-edition).
+The Coroot documentation is available at [docs.coroot.com/docs](https://docs.coroot.com/).
+
+## Live demo
+
+A live demo of Coroot is available at [demo.coroot.com](https://demo.coroot.com/)
+
+## Community & Support
+
+* [Community Slack](https://join.slack.com/t/coroot-community/shared_invite/zt-1gsnfo0wj-I~Zvtx5CAAb8vr~r~vecyw)
+* [GitHub Discussions](https://github.com/coroot/coroot/discussions)
+* [GitHub Issues](https://github.com/coroot/coroot/issues)
+* Twitter: [@coroot_com](https://twitter.com/coroot_com)
+
+
+## Contributing
+To start contributing, check out our [Contributing Guide](https://github.com/coroot/coroot/blob/main/CONTRIBUTING.md).
 
 ## License
 

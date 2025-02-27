@@ -6,10 +6,11 @@ type Pod struct {
 	Phase     string
 	Reason    string
 	Scheduled bool
+	IP        string
 
-	Running  timeseries.TimeSeries
-	Ready    timeseries.TimeSeries
-	LifeSpan timeseries.TimeSeries
+	Running  *timeseries.TimeSeries
+	Ready    *timeseries.TimeSeries
+	LifeSpan *timeseries.TimeSeries
 
 	ReplicaSet string
 
@@ -28,6 +29,14 @@ func (pod *Pod) IsObsolete() bool {
 	return pod.Phase == ""
 }
 
+func (pod *Pod) IsFailed() bool {
+	return pod.Phase == "Failed"
+}
+
 func (pod *Pod) IsReady() bool {
-	return pod.Ready != nil && pod.Ready.Last() > 0
+	return pod.Ready.Last() > 0
+}
+
+func (pod *Pod) IsSucceeded() bool {
+	return pod.Phase == "Succeeded"
 }

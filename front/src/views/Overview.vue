@@ -1,58 +1,129 @@
 <template>
-<div>
-    <h1 class="text-h5 my-5">
-        Applications
-        <v-progress-linear v-if="loading" indeterminate color="green" />
-    </h1>
+    <div>
+        <div class="my-4">
+            <v-tabs :value="view" height="40" show-arrows slider-size="2">
+                <template v-for="(name, view) in views">
+                    <v-tab
+                        v-if="name && view"
+                        :to="{
+                            params: { view, id: undefined, report: undefined },
+                            query: view === 'incidents' ? { ...$utils.contextQuery(), incident: undefined } : $utils.contextQuery(),
+                        }"
+                        :tab-value="view"
+                    >
+                        {{ name }}
+                    </v-tab>
+                </template>
+            </v-tabs>
+        </div>
 
-    <v-alert v-if="error" color="red" icon="mdi-alert-octagon-outline" outlined text>
-        {{error}}
-    </v-alert>
+        <template v-if="view === 'applications'">
+            <Application v-if="id" :id="id" :report="report" />
+            <Applications v-else />
+        </template>
 
-    <AppsMap v-if="overview && overview.applications" :applications="overview.applications" />
-    <NoData v-else-if="!loading" />
+        <template v-if="view === 'incidents'">
+            <Incident v-if="$route.query.incident" />
+            <Incidents v-else />
+        </template>
 
-    <h1 class="text-h5 my-5">
-        Nodes
-    </h1>
-    <Table v-if="overview && overview.nodes && overview.nodes.rows" :header="overview.nodes.header" :rows="overview.nodes.rows" />
-    <NoData v-else-if="!loading" />
-</div>
+        <template v-if="view === 'map'">
+            <ServiceMap />
+        </template>
+
+        <template v-if="view === 'nodes'">
+            <Node v-if="id" :name="id" />
+            <Nodes v-else />
+        </template>
+
+        <template v-if="view === 'deployments'">
+            <Deployments />
+        </template>
+
+        <template v-if="view === 'traces'">
+            <Traces />
+        </template>
+
+        <template v-if="view === 'costs'">
+            <Costs />
+        </template>
+
+        <template v-if="view === 'anomalies'">
+            <RCA v-if="id" :appId="id" />
+            <Anomalies v-else />
+        </template>
+
+        <template v-if="view === 'risks'">
+            <Risks />
+        </template>
+    </div>
 </template>
 
 <script>
-import AppsMap from "@/components/AppsMap";
-import Table from "@/components/Table";
-import NoData from "@/components/NoData";
+import Applications from '@/views/Applications.vue';
+import Application from '@/views/Application.vue';
+import Incidents from '@/views/Incidents.vue';
+import Incident from '@/views/Incident.vue';
+import ServiceMap from '@/views/ServiceMap.vue';
+import Traces from '@/views/Traces.vue';
+import Nodes from '@/views/Nodes.vue';
+import Node from '@/views/Node.vue';
+import Deployments from '@/views/Deployments.vue';
+import Costs from '@/views/Costs.vue';
+import Anomalies from '@/views/Anomalies.vue';
+import RCA from '@/views/RCA.vue';
+import Risks from '@/views/Risks.vue';
 
 export default {
-    components: {AppsMap, Table, NoData},
-
-    data() {
-        return {
-            overview: null,
-            loading: false,
-            error: '',
-        }
+    components: {
+        Applications,
+        Application,
+        Incidents,
+        Incident,
+        ServiceMap,
+        Traces,
+        Nodes,
+        Node,
+        Deployments,
+        Costs,
+        Anomalies,
+        RCA,
+        Risks,
+    },
+    props: {
+        view: String,
+        id: String,
+        report: String,
     },
 
-    mounted() {
-        this.get();
-        this.$events.watch(this, this.get, 'refresh');
+    computed: {
+        views() {
+            return {
+                '': this.$route.query, // a bit of a hack to enable reactivity for tabs
+                applications: 'Applications',
+                incidents: 'Incidents',
+                map: 'Service Map',
+                traces: 'Traces',
+                nodes: 'Nodes',
+                deployments: 'Deployments',
+                costs: 'Costs',
+                anomalies: this.$coroot.edition === 'Enterprise' ? 'Anomalies' : '',
+                risks: 'Risks',
+            };
+        },
     },
 
-    methods: {
-        get() {
-            this.loading = true;
-            this.$api.getOverview((data, error) => {
-                this.loading = false;
-                if (error) {
-                    this.error = error;
-                    return;
+    watch: {
+        view: {
+            handler(v) {
+                if (!this.views[v]) {
+                    this.$router.replace({ params: { view: 'applications' } }).catch((err) => err);
                 }
-                this.overview = data;
-            });
-        }
+            },
+            immediate: true,
+        },
     },
 };
 </script>
+
+<style scoped></style>

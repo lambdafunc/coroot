@@ -2,15 +2,7 @@ package model
 
 import (
 	"github.com/coroot/coroot/timeseries"
-	"k8s.io/klog"
-	"math"
-	"net"
 )
-
-type InstanceId struct {
-	Name    string
-	OwnerId ApplicationId
-}
 
 type ClusterRole int
 
@@ -18,6 +10,7 @@ const (
 	ClusterRoleNone ClusterRole = iota
 	ClusterRolePrimary
 	ClusterRoleReplica
+	ClusterRoleArbiter
 )
 
 func (r ClusterRole) String() string {
@@ -26,45 +19,53 @@ func (r ClusterRole) String() string {
 		return "primary"
 	case ClusterRoleReplica:
 		return "replica"
+	case ClusterRoleArbiter:
+		return "arbiter"
 	}
 	return ""
 }
 
 type Instance struct {
-	InstanceId
+	Name  string
+	Owner *Application
 
 	Node *Node
 
 	Pod *Pod
 
-	Rds *Rds
+	Rds         *Rds
+	Elasticache *Elasticache
+
+	Jvms   map[string]*Jvm
+	DotNet map[string]*DotNet
+	Python *Python
 
 	Volumes []*Volume
 
-	Upstreams   []*Connection
-	Downstreams []*Connection
+	Upstreams map[ConnectionKey]*Connection
 
 	TcpListens map[Listen]bool
 
 	Containers map[string]*Container
 
-	LogMessagesByLevel map[LogLevel]timeseries.TimeSeries
-	LogPatterns        map[string]*LogPattern
+	ClusterName      LabelLastValue
+	clusterRole      *timeseries.TimeSeries
+	ClusterComponent *Application
 
-	ClusterName LabelLastValue
-	clusterRole timeseries.TimeSeries
-
-	Postgres *Postgres
-	Redis    *Redis
+	Postgres  *Postgres
+	Redis     *Redis
+	Mongodb   *Mongodb
+	Memcached *Memcached
+	Mysql     *Mysql
 }
 
-func NewInstance(name string, owner ApplicationId) *Instance {
+func NewInstance(name string, owner *Application) *Instance {
 	return &Instance{
-		InstanceId:         InstanceId{Name: name, OwnerId: owner},
-		LogMessagesByLevel: map[LogLevel]timeseries.TimeSeries{},
-		LogPatterns:        map[string]*LogPattern{},
-		Containers:         map[string]*Container{},
-		TcpListens:         map[Listen]bool{},
+		Name:       name,
+		Owner:      owner,
+		Containers: map[string]*Container{},
+		Upstreams:  map[ConnectionKey]*Connection{},
+		TcpListens: map[Listen]bool{},
 	}
 }
 
@@ -75,6 +76,12 @@ func (instance *Instance) ApplicationTypes() map[ApplicationType]bool {
 			res[t] = true
 		}
 	}
+	if t := instance.Rds.ApplicationType(); t != ApplicationTypeUnknown {
+		res[t] = true
+	}
+	if t := instance.Elasticache.ApplicationType(); t != ApplicationTypeUnknown {
+		res[t] = true
+	}
 	return res
 }
 
@@ -82,148 +89,143 @@ func (instance *Instance) InstrumentedType() ApplicationType {
 	switch {
 	case instance.Postgres != nil:
 		return ApplicationTypePostgres
+	case instance.Mysql != nil:
+		return ApplicationTypeMysql
 	case instance.Redis != nil:
 		return ApplicationTypeRedis
+	case instance.Mongodb != nil:
+		return ApplicationTypeMongodb
+	case instance.Memcached != nil:
+		return ApplicationTypeMemcached
 	}
 	return ApplicationTypeUnknown
 }
 
-func (instance *Instance) GetOrCreateContainer(name string) *Container {
+func (instance *Instance) GetOrCreateContainer(id, name string) *Container {
 	c := instance.Containers[name]
 	if c == nil {
-		c = NewContainer(name)
+		c = NewContainer(id, name)
 		instance.Containers[name] = c
 	}
 	return c
 }
 
-func (instance *Instance) GetOrCreateUpstreamConnection(ls Labels, container string) *Connection {
-	actualDest := ls["actual_destination"]
-	dest := ls["destination"]
-
-	var serviceIP, servicePort, actualIP, actualPort string
-	var err error
-
-	serviceIP, servicePort, err = net.SplitHostPort(dest)
-	if err != nil {
-		klog.Warningf("failed to split %s to ip:port pair: %s", dest, err)
-		return nil
-	}
-	if actualDest != "" {
-		actualIP, actualPort, err = net.SplitHostPort(actualDest)
-		if err != nil {
-			klog.Warningf("failed to split %s to ip:port pair: %s", actualDest, err)
-			return nil
-		}
-	}
-	for _, c := range instance.Upstreams {
-		if c.ActualRemoteIP == actualIP && c.ActualRemotePort == actualPort &&
-			c.ServiceRemoteIP == serviceIP && c.ServiceRemotePort == servicePort {
-			return c
-		}
-	}
-	c := &Connection{
-		Instance:          instance,
-		ActualRemoteIP:    actualIP,
-		ActualRemotePort:  actualPort,
-		ServiceRemoteIP:   serviceIP,
-		ServiceRemotePort: servicePort,
-		Container:         container,
-	}
-	instance.Upstreams = append(instance.Upstreams, c)
-	return c
-}
-
 func (instance *Instance) NodeName() string {
 	if instance.Node != nil {
-		return instance.Node.Name.Value()
+		return instance.Node.GetName()
 	}
 	return ""
 }
 
-func (instance *Instance) UpdateClusterRole(role string, v timeseries.TimeSeries) {
-	if instance.clusterRole == nil {
-		instance.clusterRole = timeseries.Aggregate(timeseries.Any)
+func (instance *Instance) NodeId() NodeId {
+	if instance.Node != nil {
+		return instance.Node.Id
 	}
+	return NodeId{}
+}
+
+func (instance *Instance) UpdateClusterRole(role string, v *timeseries.TimeSeries) {
 	switch role {
 	case "primary":
-		instance.clusterRole.(*timeseries.AggregatedTimeseries).AddInput(
-			timeseries.Map(func(v float64) float64 {
-				if v == 1 {
-					return float64(ClusterRolePrimary)
-				}
-				return timeseries.NaN
-			}, v))
+		v = v.Map(func(t timeseries.Time, v float32) float32 {
+			if v == 1 {
+				return float32(ClusterRolePrimary)
+			}
+			return timeseries.NaN
+		})
 	case "replica":
-		instance.clusterRole.(*timeseries.AggregatedTimeseries).AddInput(
-			timeseries.Map(func(v float64) float64 {
-				if v == 1 {
-					return float64(ClusterRoleReplica)
-				}
-				return timeseries.NaN
-			}, v))
+		v = v.Map(func(t timeseries.Time, v float32) float32 {
+			if v == 1 {
+				return float32(ClusterRoleReplica)
+			}
+			return timeseries.NaN
+		})
+	case "arbiter":
+		v = v.Map(func(t timeseries.Time, v float32) float32 {
+			if v == 1 {
+				return float32(ClusterRoleArbiter)
+			}
+			return timeseries.NaN
+		})
+	default:
+		return
+	}
+	if instance.clusterRole == nil {
+		instance.clusterRole = v
+	} else {
+		instance.clusterRole = timeseries.NewAggregate(timeseries.Any).Add(instance.clusterRole, v).Get()
 	}
 }
 
-func (instance *Instance) ClusterRole() timeseries.TimeSeries {
-	if instance.Pod == nil || instance.Pod.Ready == nil || instance.clusterRole.IsEmpty() {
+func (instance *Instance) ClusterRole() *timeseries.TimeSeries {
+	if instance.Pod == nil || instance.Pod.Ready.IsEmpty() || instance.clusterRole.IsEmpty() {
 		return instance.clusterRole
 	}
-	return timeseries.Aggregate(timeseries.Mul, instance.clusterRole, instance.Pod.Ready)
+	return timeseries.Mul(instance.clusterRole, instance.Pod.Ready)
 }
 
 func (instance *Instance) ClusterRoleLast() ClusterRole {
 	role := instance.ClusterRole()
-	if role == nil || role.IsEmpty() {
+	if role.IsEmpty() {
 		return ClusterRoleNone
 	}
 	return ClusterRole(role.Last())
 }
 
-func (instance *Instance) LifeSpan() timeseries.TimeSeries {
+func (instance *Instance) LifeSpan() *timeseries.TimeSeries {
 	if instance.Pod != nil {
 		return instance.Pod.LifeSpan
 	}
 	for _, c := range instance.Containers {
-		return timeseries.Map(timeseries.Defined, c.MemoryRss)
+		return c.MemoryRss.Map(timeseries.Defined)
 	}
 	return nil
 }
 
 func (instance *Instance) IsUp() bool {
 	for _, c := range instance.Containers {
-		if c.MemoryRss != nil && !math.IsNaN(c.MemoryRss.Last()) {
+		if !c.MemoryRss.TailIsEmpty() {
 			return true
 		}
 	}
 	return false
 }
 
-func (instance *Instance) UpAndRunning() timeseries.TimeSeries {
-	mem := timeseries.Aggregate(timeseries.Any)
+func (instance *Instance) IsObsolete() bool {
+	return instance.Pod != nil && instance.Pod.IsObsolete()
+}
+
+func (instance *Instance) IsFailed() bool {
+	return instance.Pod != nil && instance.Pod.IsFailed()
+}
+
+func (instance *Instance) UpAndRunning() *timeseries.TimeSeries {
+	mem := timeseries.NewAggregate(timeseries.Any)
 	for _, c := range instance.Containers {
-		mem.AddInput(c.MemoryRss)
+		mem.Add(c.MemoryRss)
 	}
-	if mem.IsEmpty() {
+	memTs := mem.Get()
+
+	if memTs.IsEmpty() {
 		return nil
 	}
-	up := timeseries.Map(func(v float64) float64 {
+	up := memTs.Map(func(t timeseries.Time, v float32) float32 {
 		if v > 0 {
 			return 1
 		}
 		return 0
-	}, mem)
+	})
 	if instance.Pod == nil {
 		return up
 	}
-	running := timeseries.Map(timeseries.NanToZero, instance.Pod.Running)
-	ready := timeseries.Map(timeseries.NanToZero, instance.Pod.Ready)
-	return timeseries.Aggregate(timeseries.Min).AddInput(running, ready, up)
+	running := instance.Pod.Running.Map(timeseries.NanToZero)
+	ready := instance.Pod.Ready.Map(timeseries.NanToZero)
+	return timeseries.NewAggregate(timeseries.Min).Add(running, ready, up).Get()
 }
 
 func (instance *Instance) IsListenActive(ip, port string) bool {
 	for l, active := range instance.TcpListens {
-		if l.IP == ip && l.Port == port {
+		if l.IP == ip && (l.Port == port || l.Port == "0") {
 			return active
 		}
 	}
